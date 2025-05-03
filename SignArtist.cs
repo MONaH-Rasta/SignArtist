@@ -15,10 +15,11 @@ using UnityEngine;
 using UnityEngine.Networking;
 using Color = System.Drawing.Color;
 using Graphics = System.Drawing.Graphics;
+using Steamworks;
 
 namespace Oxide.Plugins
 {
-    [Info("Sign Artist", "Whispers88", "1.2.0", ResourceId = 992)]
+    [Info("Sign Artist", "Whispers88", "1.2.5", ResourceId = 992)]
     [Description("Allows players with the appropriate permission to import images from the internet on paintable objects")]
 
     /*********************************************************************************
@@ -33,6 +34,8 @@ namespace Oxide.Plugins
         private ImageDownloader imageDownloader;
         SignArtistConfig Settings { get; set; }
         Dictionary<string, ImageSize> ImageSizePerAsset { get; set; }
+
+        Dictionary<ulong, string> SkiniconUrls = new Dictionary<ulong, string>();
 
         private const string ItemIconUrl = "https://www.rustedit.io/images/imagelibrary/{0}.png";
 
@@ -85,6 +88,19 @@ namespace Oxide.Plugins
             [JsonProperty("Enable logging console")]
             public bool ConsoleLogging { get; set; }
 
+            [JsonProperty("Enable discord logging")]
+            public bool Discordlogging { get; set; }
+
+            [JsonProperty("Discord Webhook")]
+            public string DiscordWebhook { get; set; }
+
+            [JsonProperty("Avatar URL")]
+            public string AvatarUrl { get; set; }
+
+            [JsonProperty("Discord Username")]
+            public string DiscordUsername { get; set; }
+
+
             [JsonIgnore]
             public float MaxFileSizeInBytes
             {
@@ -111,7 +127,11 @@ namespace Oxide.Plugins
                     EnforceJpeg = false,
                     Quality = 85,
                     FileLogging = false,
-                    ConsoleLogging = false
+                    ConsoleLogging = false,
+                    Discordlogging = false,
+                    DiscordWebhook = "",
+                    AvatarUrl = "https://i.imgur.com/dH7V1Dh.png",
+                    DiscordUsername = "Sign Artist"
                 };
             }
         }
@@ -202,6 +222,8 @@ namespace Oxide.Plugins
             }
         }
 
+
+        #region Image Download Behaviour
         /// <summary>
         /// UnityEngine script to be attached to a GameObject to download images and apply them to signs.
         /// </summary>
@@ -400,7 +422,6 @@ namespace Oxide.Plugins
 
                 // Get the bytes array for the resized image for the targeted sign.
                 byte[] resizedImageBytes = imageBytes.ResizeImage(size.Width, size.Height, size.ImageWidth, size.ImageHeight, signArtist.Settings.EnforceJpeg && !request.Raw, rotation);
-
                 // Verify that the resized file doesn't exceed the maximum configured filesize.
                 if (resizedImageBytes.Length > signArtist.Settings.MaxFileSizeInBytes)
                 {
@@ -429,29 +450,79 @@ namespace Oxide.Plugins
                 // Call the Oxide hook 'OnSignUpdated' to notify other plugins of the update event.
                 Interface.Oxide.CallHook("OnSignUpdated", request.Sign, request.Sender);
 
-                // Check if logging to console is enabled.
-                if (signArtist.Settings.ConsoleLogging)
+                if (request.Sender != null)
                 {
-                    // Console logging is enabled, show a message in the server console.
-                    signArtist.Puts(signArtist.GetTranslation("LogEntry"), request.Sender.displayName,
-                        request.Sender.userID, request.Sign.TextureId(), request.Sign.ShortPrefabName, request.Url);
-                }
+                    // Check if logging to console is enabled.
+                    if (signArtist.Settings.ConsoleLogging)
+                    {
+                        // Console logging is enabled, show a message in the server console.
+                        signArtist.Puts(signArtist.GetTranslation("LogEntry"), request.Sender.displayName,
+                            request.Sender.userID, request.Sign.TextureId(), request.Sign.ShortPrefabName, request.Url);
+                    }
 
-                // Check if logging to file is enabled.
-                if (signArtist.Settings.FileLogging)
-                {
-                    // File logging is enabled, add an entry to the logfile.
-                    signArtist.LogToFile("log",
-                        string.Format(signArtist.GetTranslation("LogEntry"), request.Sender.displayName,
-                            request.Sender.userID, request.Sign.TextureId(), request.Sign.ShortPrefabName,
-                            request.Url), signArtist);
-                }
+                    // Check if logging to file is enabled.
+                    if (signArtist.Settings.FileLogging)
+                    {
+                        // File logging is enabled, add an entry to the logfile.
+                        signArtist.LogToFile("log",
+                            string.Format(signArtist.GetTranslation("LogEntry"), request.Sender.displayName,
+                                request.Sender.userID, request.Sign.TextureId(), request.Sign.ShortPrefabName,
+                                request.Url), signArtist);
+                    }
 
+                    if (signArtist.Settings.Discordlogging)
+                    {
+                        // Discord logging is enabled, add an entry to the logfile.
+                        StartCoroutine(LogToDiscord(request));
+                    }
+                }
                 // Attempt to start the next download.
                 StartNextDownload(true);
                 www.Dispose();
 
             }
+
+            private IEnumerator LogToDiscord(DownloadRequest request)
+            {
+                BasePlayer player = request.Sender;
+                IPaintableEntity sign = request.Sign;
+                var msg = DiscordMessage(ConVar.Server.hostname, player.displayName, player.UserIDString, sign.ShortPrefabName, request.Url, sign.Entity.transform.position.ToString());
+                string jsonmsg = JsonConvert.SerializeObject(msg);
+                UnityWebRequest wwwpost = new UnityWebRequest(signArtist.Settings.DiscordWebhook, "POST");
+                byte[] jsonToSend = new System.Text.UTF8Encoding().GetBytes(jsonmsg.ToString());
+                wwwpost.uploadHandler = (UploadHandler)new UploadHandlerRaw(jsonToSend);
+                wwwpost.SetRequestHeader("Content-Type", "application/json");
+                yield return wwwpost.SendWebRequest();
+
+                if (wwwpost.isNetworkError || wwwpost.isHttpError)
+                {
+                    signArtist.PrintError(wwwpost.error);
+                    signArtist.PrintError(jsonmsg);
+                    yield break;
+                }
+                wwwpost.Dispose();
+            }
+
+            private Message DiscordMessage(string servername, string playername, string userid, string itemname, string imgurl, string location)
+            {
+                string steamprofile = "https://steamcommunity.com/profiles/" + userid;
+                var fields = new List<Message.Fields>()
+                {
+                    new Message.Fields("Player: " + playername, $"[{userid}]({steamprofile})", true),
+                    new Message.Fields("Entity", itemname, true),
+                    new Message.Fields("Image Url", imgurl, false),
+                    new Message.Fields("Teleport position", "teleportpos " + location.Replace(" ", string.Empty), false)
+                };
+                var footer = new Message.Footer($"Logged @{DateTime.UtcNow:dd/MM/yy HH:mm:ss}");
+                var image = new Message.Image(imgurl);
+                var embeds = new List<Message.Embeds>()
+                {
+                    new Message.Embeds("Server - " + servername, "A sign has been updated" , fields, footer, image)
+                };
+                Message msg = new Message(signArtist.Settings.DiscordUsername, signArtist.Settings.AvatarUrl, embeds);
+                return msg;
+            }
+
 
             /// <summary>
             /// Restores the image and adds it to the sign again.
@@ -553,6 +624,7 @@ namespace Oxide.Plugins
             }
         }
 
+        #endregion Image Download Behaviour
         private interface IBasePaintableEntity
         {
             BaseEntity Entity { get; }
@@ -640,9 +712,12 @@ namespace Oxide.Plugins
             }
         }
 
+
+        #region Init
         /// <summary>
         /// Oxide hook that is triggered when the plugin is loaded.
         /// </summary>
+        /// 
         private void Init()
         {
             // Register all the permissions used by the plugin
@@ -700,6 +775,91 @@ namespace Oxide.Plugins
             };
         }
 
+        private void GetSteamworksImages()
+        {
+            foreach (InventoryDef item in Steamworks.SteamInventory.Definitions)
+            {
+                string shortname = item.GetProperty("itemshortname");
+                if (item == null || string.IsNullOrEmpty(shortname))
+                    continue;
+
+                if (item.Id < 100)
+                    continue;
+
+                ulong workshopid;
+                if (!ulong.TryParse(item.GetProperty("workshopid"), out workshopid))
+                    continue;
+
+                if (string.IsNullOrEmpty(item.IconUrl)) continue;
+                SkiniconUrls[workshopid] = item.IconUrl;
+            }
+        }
+
+        /// <summary>
+        /// Oxide hook that is triggered to automatically load the configuration file.
+        /// </summary>
+        protected override void LoadConfig()
+        {
+            base.LoadConfig();
+            Settings = Config.ReadObject<SignArtistConfig>();
+            SaveConfig();
+        }
+
+        /// <summary>
+        /// Oxide hook that is triggered to automatically load the default configuration file when no file exists.
+        /// </summary>
+        protected override void LoadDefaultConfig()
+        {
+            Settings = SignArtistConfig.DefaultConfig();
+        }
+
+        /// <summary>
+        /// Oxide hook that is triggered to save the configuration file.
+        /// </summary>
+        protected override void SaveConfig()
+        {
+            Config.WriteObject(Settings);
+        }
+
+        /// <summary>
+        /// Oxide hook that is triggered when the server has fully initialized.
+        /// </summary>
+        private void OnServerInitialized()
+        {
+            // Create a new GameObject and attach the UnityEngine script to it for handling the image downloads.
+            imageDownloaderGameObject = new GameObject("ImageDownloader");
+            imageDownloader = imageDownloaderGameObject.AddComponent<ImageDownloader>();
+            if ((Steamworks.SteamInventory.Definitions?.Length ?? 0) == 0)
+            {
+                PrintWarning("Waiting for Steamworks to update item definitions....");
+                Steamworks.SteamInventory.OnDefinitionsUpdated += GetSteamworksImages;
+            }
+            else GetSteamworksImages();
+        }
+
+        /// <summary>
+        /// Oxide hook that is triggered when the plugin is unloaded.
+        /// </summary>
+        private void Unload()
+        {
+            // Destroy the created GameObject and cleanup.
+            UnityEngine.Object.Destroy(imageDownloaderGameObject);
+            imageDownloader = null;
+            cooldowns = null;
+
+            Steamworks.SteamInventory.OnDefinitionsUpdated -= GetSteamworksImages;
+        }
+
+        /// <summary>
+        /// Handles the /sil command.
+        /// </summary>
+        /// <param name="iplayer">The player that has executed the command. </param>
+        /// <param name="command">The name of the command that was executed. </param>
+        /// <param name="args">All arguments that were passed with the command. </param>
+        /// 
+        #endregion Init
+
+        #region Localization 
         /// <summary>
         /// Oxide hook that is triggered automatically after it has been loaded to initialize the messages for the Lang API.
         /// </summary>
@@ -743,60 +903,9 @@ namespace Oxide.Plugins
                 ["and"] = "and"
             }, this);
         }
+        #endregion Localization
 
-        /// <summary>
-        /// Oxide hook that is triggered to automatically load the configuration file.
-        /// </summary>
-        protected override void LoadConfig()
-        {
-            base.LoadConfig();
-            Settings = Config.ReadObject<SignArtistConfig>();
-            SaveConfig();
-        }
-
-        /// <summary>
-        /// Oxide hook that is triggered to automatically load the default configuration file when no file exists.
-        /// </summary>
-        protected override void LoadDefaultConfig()
-        {
-            Settings = SignArtistConfig.DefaultConfig();
-        }
-
-        /// <summary>
-        /// Oxide hook that is triggered to save the configuration file.
-        /// </summary>
-        protected override void SaveConfig()
-        {
-            Config.WriteObject(Settings);
-        }
-
-        /// <summary>
-        /// Oxide hook that is triggered when the server has fully initialized.
-        /// </summary>
-        private void OnServerInitialized()
-        {
-            // Create a new GameObject and attach the UnityEngine script to it for handling the image downloads.
-            imageDownloaderGameObject = new GameObject("ImageDownloader");
-            imageDownloader = imageDownloaderGameObject.AddComponent<ImageDownloader>();
-        }
-
-        /// <summary>
-        /// Oxide hook that is triggered when the plugin is unloaded.
-        /// </summary>
-        private void Unload()
-        {
-            // Destroy the created GameObject and cleanup.
-            UnityEngine.Object.Destroy(imageDownloaderGameObject);
-            imageDownloader = null;
-            cooldowns = null;
-        }
-
-        /// <summary>
-        /// Handles the /sil command.
-        /// </summary>
-        /// <param name="iplayer">The player that has executed the command. </param>
-        /// <param name="command">The name of the command that was executed. </param>
-        /// <param name="args">All arguments that were passed with the command. </param>
+        #region Commands
         [Command("sil"), Permission("signartist.url")]
         private void SilCommand(IPlayer iplayer, string command, string[] args)
         {
@@ -922,10 +1031,52 @@ namespace Oxide.Plugins
             bool hor = sign.ShortPrefabName == "sign.hanging";
 
             SendMessage(player, "DownloadQueued");
+            bool defaultskin = false;
+            if (args.Length == 1 && args[0] == "default") defaultskin = true;
+            if (held.skin != 0uL && !defaultskin)
+            {
+                string url;
+                if (SkiniconUrls.TryGetValue(held.skin, out url))
+                {
+                    shortname = url;
+                }
+                else
+                {
+                    ServerMgr.Instance.StartCoroutine(DownloadWorkshopskin(held, sign, hor));
+                    return;
+                }
+            }
 
             imageDownloader.QueueDownload(shortname, player, sign, false, hor);
 
             Interface.Oxide.CallHook("OnImagePost", player, shortname);
+
+            SetCooldown(player);
+        }
+
+        private const string FindWorkshopSkinUrl = "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/";
+
+        private IEnumerator DownloadWorkshopskin(Item held, IPaintableEntity sign, bool hor)
+        {
+            BasePlayer player = held.GetOwnerPlayer();
+            WWWForm form = new WWWForm();
+            form.AddField("itemcount", "1");
+            form.AddField("publishedfileids[0]", held.skin.ToString());
+            UnityWebRequest www = UnityWebRequest.Post(FindWorkshopSkinUrl, form);
+            yield return www.SendWebRequest();
+            string url = "";
+            // Verify that the webrequest was succesful.
+            if (www.isNetworkError || www.isHttpError)
+            {
+                // The webrequest wasn't succesful, show a message to the player and attempt to start the next download.
+                PrintError(www.error.ToString());
+                url = held.info.shortname;
+            }
+            var json = JsonConvert.DeserializeObject<GetPublishedFileDetailsClass>(www.downloadHandler.text);
+            url = json.response.publishedfiledetails[0].preview_url;
+            imageDownloader.QueueDownload(url, player, sign, false, hor);
+
+            Interface.Oxide.CallHook("OnImagePost", player, held.info.shortname);
 
             SetCooldown(player);
         }
@@ -1062,23 +1213,6 @@ namespace Oxide.Plugins
             SetCooldown(player);
         }
 
-        // This can be Call(ed) by other plugins to put text on a sign
-        void signText(BasePlayer player, Signage sign, string message, int fontsize = 30, string color = "FFFFFF", string bgcolor = "000000")
-        {
-            //Puts($"signText called with {message}");
-            string format = "png32";
-
-            ImageSize size = null;
-            if (ImageSizePerAsset.ContainsKey(sign.ShortPrefabName))
-            {
-                size = ImageSizePerAsset[sign.ShortPrefabName];
-            }
-
-            // Combine all the values into the url;
-            string url = $"http://assets.imgix.net/~text?fm={format}&txtalign=middle,center&txtsize={fontsize}&txt={message}&w={size.ImageWidth}&h={size.ImageHeight}&txtclr={color}&bg={bgcolor}";
-            imageDownloader.QueueDownload(url, player, new PaintableSignage(sign), false);
-        }
-
         /// <summary>
         /// Handles the /silrestore command
         /// </summary>
@@ -1151,6 +1285,9 @@ namespace Oxide.Plugins
             }
         }
 
+        #endregion Commands
+
+        #region Methods
         /// <summary>
         /// Check if the given <see cref="BasePlayer"/> is able to use the command.
         /// </summary>
@@ -1314,6 +1451,7 @@ namespace Oxide.Plugins
         /// <param name="args">Any amount of arguments to add to the message. </param>
         private void SendMessage(BasePlayer player, string key, params object[] args)
         {
+            if (player == null) return;
             player.ChatMessage(string.Format(GetTranslation(key, player), args));
         }
 
@@ -1327,6 +1465,163 @@ namespace Oxide.Plugins
         {
             return lang.GetMessage(key, this, player?.UserIDString);
         }
+        #endregion Methods
+
+        #region Steam Workshop API Class
+
+        public class GetPublishedFileDetailsClass
+        {
+            public Response response { get; set; }
+        }
+
+        public class Response
+        {
+            public int result { get; set; }
+            public int resultcount { get; set; }
+            public Publishedfiledetail[] publishedfiledetails { get; set; }
+        }
+
+        public class Publishedfiledetail
+        {
+            public string publishedfileid { get; set; }
+            public int result { get; set; }
+            public string creator { get; set; }
+            public int creator_app_id { get; set; }
+            public int consumer_app_id { get; set; }
+            public string filename { get; set; }
+            public int file_size { get; set; }
+            public string preview_url { get; set; }
+            public string hcontent_preview { get; set; }
+            public string title { get; set; }
+            public string description { get; set; }
+            public int time_created { get; set; }
+            public int time_updated { get; set; }
+            public int visibility { get; set; }
+            public int banned { get; set; }
+            public string ban_reason { get; set; }
+            public int subscriptions { get; set; }
+            public int favorited { get; set; }
+            public int lifetime_subscriptions { get; set; }
+            public int lifetime_favorited { get; set; }
+            public int views { get; set; }
+            public Tag[] tags { get; set; }
+        }
+
+        public class Tag
+        {
+            public string tag { get; set; }
+        }
+
+        #endregion Steam Workshop API Class
+
+        #region Discord Class
+        public class Message
+        {
+            public string username { get; set; }
+            public string avatar_url { get; set; }
+            public List<Embeds> embeds { get; set; }
+
+            public class Fields
+            {
+                public string name { get; set; }
+                public string value { get; set; }
+                public bool inline { get; set; }
+                public Fields(string name, string value, bool inline)
+                {
+                    this.name = name;
+                    this.value = value;
+                    this.inline = inline;
+                }
+            }
+
+            public class Footer
+            {
+                public string text { get; set; }
+                public Footer(string text)
+                {
+                    this.text = text;
+                }
+            }
+
+            public class Image
+            {
+                public string url { get; set; }
+                public Image(string url)
+                {
+                    this.url = url;
+                }
+            }
+
+            public class Embeds
+            {
+                public string title { get; set; }
+                public string description { get; set; }
+                public Image image { get; set; }
+                public List<Fields> fields { get; set; }
+                public Footer footer { get; set; }
+                public Embeds(string title, string description, List<Fields> fields, Footer footer, Image image)
+                {
+                    this.title = title;
+                    this.description = description;
+                    this.image = image;
+                    this.fields = fields;
+                    this.footer = footer;
+                }
+            }
+
+            public Message(string username, string avatar_url, List<Embeds> embeds)
+            {
+                this.username = username;
+                this.avatar_url = avatar_url;
+                this.embeds = embeds;
+            }
+        }
+
+        #endregion
+
+        #region Public Helpers
+        // This can be Call(ed) by other plugins to put text on a sign
+        public void API_SignText(BasePlayer player, Signage sign, string message, int fontsize = 30, string color = "FFFFFF", string bgcolor = "000000")
+        {
+            //Puts($"signText called with {message}");
+            string format = "png32";
+
+            ImageSize size = null;
+            if (ImageSizePerAsset.ContainsKey(sign.ShortPrefabName))
+            {
+                size = ImageSizePerAsset[sign.ShortPrefabName];
+            }
+
+            // Combine all the values into the url;
+            string url = $"http://assets.imgix.net/~text?fm={format}&txtalign=middle,center&txtsize={fontsize}&txt={message}&w={size.ImageWidth}&h={size.ImageHeight}&txtclr={color}&bg={bgcolor}";
+            imageDownloader.QueueDownload(url, player, new PaintableSignage(sign), false);
+        }
+
+        public void API_SkinSign(BasePlayer player, Signage sign, string url, bool raw = false)
+        {
+            if (sign == null)
+            {
+                PrintWarning("Signage is null in API call");
+                return;
+            }
+
+            if (string.IsNullOrEmpty(url))
+            {
+                PrintWarning("Url is empty in API call");
+                return;
+            }
+
+            // This sign pastes in reverse, so we'll check and set a var to flip it
+            bool hor = sign.ShortPrefabName == "sign.hanging" ? true : false;
+
+            // Queue the download of the specified image.
+            imageDownloader.QueueDownload(url, player, new PaintableSignage(sign), raw, hor);
+        }
+
+
+        //TODO add image byte[] api 
+        #endregion
+
     }
 
     namespace SignArtistClasses
@@ -1350,48 +1645,54 @@ namespace Oxide.Plugins
             {
                 byte[] resizedImageBytes;
 
-                using (MemoryStream originalBytesStream = new MemoryStream(bytes))
+                using (MemoryStream originalBytesStream = new MemoryStream(), resizedBytesStream = new MemoryStream())
                 {
-                    using (Bitmap image = new Bitmap(originalBytesStream))
+                    // Write the downloaded image bytes array to the memorystream and create a new Bitmap from it.
+                    originalBytesStream.Write(bytes, 0, bytes.Length);
+                    Bitmap image = new Bitmap(originalBytesStream);
+
+                    if (rotation != RotateFlipType.RotateNoneFlipNone)
                     {
-                        if (rotation != RotateFlipType.RotateNoneFlipNone)
+                        image.RotateFlip(rotation);
+                    }
+
+                    // Check if the width and height match, if they don't we will have to resize this image.
+                    if (image.Width != targetWidth || image.Height != targetHeight)
+                    {
+                        // Create a new Bitmap with the target size.
+                        Bitmap resizedImage = new Bitmap(width, height);
+
+                        // Draw the original image onto the new image and resize it accordingly.
+                        using (System.Drawing.Graphics graphics = System.Drawing.Graphics.FromImage(resizedImage))
                         {
-                            image.RotateFlip(rotation);
+                            graphics.DrawImage(image, new Rectangle(0, 0, targetWidth, targetHeight));
                         }
 
-                        // Check if the width and height match, if they don't we will have to resize this image.
-                        if (image.Width != width || image.Height != height)
+                        TimestampImage(resizedImage);
+
+                        // Save the bitmap to a MemoryStream as either Jpeg or Png.
+                        if (enforceJpeg)
                         {
-                            // Create a new Bitmap with the target size.
-                            using (Bitmap resizedImage = ResizeImage(image, targetWidth, targetHeight))
-                            {
-                                TimestampImage(resizedImage);
-
-                                using (MemoryStream resizedBytesStream = new MemoryStream())
-                                {
-                                    // Save the bitmap to a MemoryStream as either Jpeg or Png.
-                                    if (enforceJpeg)
-                                    {
-                                        resizedImage.Save(resizedBytesStream, ImageFormat.Jpeg);
-                                    }
-                                    else
-                                    {
-                                        resizedImage.Save(resizedBytesStream, ImageFormat.Png);
-                                    }
-
-                                    // Grab the bytes array from the new image's MemoryStream and dispose of the resized image Bitmap.
-                                    resizedImageBytes = resizedBytesStream.ToArray();
-                                }
-                            }
+                            resizedImage.Save(resizedBytesStream, ImageFormat.Jpeg);
                         }
                         else
                         {
-                            TimestampImage(image);
-
-                            // The image has the correct size so we can just return the original bytes without doing any resizing.
-                            resizedImageBytes = bytes;
+                            resizedImage.Save(resizedBytesStream, ImageFormat.Png);
                         }
+
+                        // Grab the bytes array from the new image's MemoryStream and dispose of the resized image Bitmap.
+                        resizedImageBytes = resizedBytesStream.ToArray();
+                        resizedImage.Dispose();
                     }
+                    else
+                    {
+                        TimestampImage(image);
+                        // The image has the correct size so we can just return the original bytes without doing any resizing.
+                        resizedImageBytes = bytes;
+                    }
+
+                    // Dispose of the original image Bitmap.
+                    image.Dispose();
                 }
 
                 // Return the bytes array.
@@ -1441,12 +1742,14 @@ namespace Oxide.Plugins
 
             private static int GetValueAtIndex(byte[] bytes, int index)
             {
+
                 if (index >= bytes.Length)
                 {
                     return 0;
                 }
 
                 return Convert.ToInt32(bytes[index]);
+
             }
 
             /// <summary>
