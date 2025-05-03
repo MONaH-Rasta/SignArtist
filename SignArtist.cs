@@ -20,7 +20,7 @@ using Steamworks;
 
 namespace Oxide.Plugins
 {
-    [Info("Sign Artist", "Whispers88", "1.4.0")]
+    [Info("Sign Artist", "Whispers88", "1.4.1")]
     [Description("Allows players with the appropriate permission to import images from the internet on paintable objects")]
 
     /*********************************************************************************
@@ -643,7 +643,7 @@ namespace Oxide.Plugins
             BaseEntity Entity { get; }
             string PrefabName { get; }
             string ShortPrefabName { get; }
-            uint NetId { get; }
+            NetworkableId NetId { get; }
             int TextureCount { get; }
             uint[] TextureIds { get; }
 
@@ -658,7 +658,7 @@ namespace Oxide.Plugins
             public BaseEntity Entity { get; }
             public string PrefabName { get; }
             public string ShortPrefabName { get; }
-            public uint NetId { get; }
+            public NetworkableId NetId { get; }
             public virtual int TextureCount => 1;
             public abstract uint[] TextureIds { get; }
 
@@ -672,7 +672,7 @@ namespace Oxide.Plugins
 
             public abstract bool CanUpdate(BasePlayer player);
             public abstract void SetImage(uint textureIndex, uint id);
-            public virtual void EnsureInitialized() {}
+            public virtual void EnsureInitialized() { }
 
             public void SendNetworkUpdate()
             {
