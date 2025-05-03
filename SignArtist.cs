@@ -18,9 +18,10 @@ using Color = System.Drawing.Color;
 using Graphics = System.Drawing.Graphics;
 using Steamworks;
 
+
 namespace Oxide.Plugins
 {
-    [Info("Sign Artist", "Whispers88", "1.4.1")]
+    [Info("Sign Artist", "Whispers88", "1.4.3")]
     [Description("Allows players with the appropriate permission to import images from the internet on paintable objects")]
 
     /*********************************************************************************
@@ -358,6 +359,37 @@ namespace Oxide.Plugins
                     request.Url = string.Format(ItemIconUrl, request.Url);
                 }
 
+                UnityWebRequest head = UnityWebRequest.Head(request.Url);
+
+                head.timeout = 10;
+
+                yield return head.SendWebRequest();
+
+                if (head.result != UnityWebRequest.Result.Success)
+                {
+                    signArtist.PrintWarning(head.error + "Cannot get headers from:" + request.Url);
+                    head.Dispose();
+                    yield break;
+                }
+                string contentlength = head.GetResponseHeader("Content-Length");
+                if (string.IsNullOrEmpty(contentlength))
+                {
+                    head.Dispose();
+                    signArtist.PrintWarning("Could not get content length from:" + request.Url);
+                    yield break;
+                }
+
+                int filesize = int.Parse(contentlength);
+                if (filesize > signArtist.Settings.MaxFileSizeInBytes * 1000000)
+                {
+                    head.Dispose();
+                    signArtist.PrintWarning($"Filesize is {filesize / 1000000} MB the maximum size allowed is {signArtist.Settings.MaxSize} MB");
+                    signArtist.SendMessage(request.Sender, "FileTooLarge", signArtist.Settings.MaxSize);
+                    yield break;
+                }
+
+                head.Dispose();
+
                 UnityWebRequest www = UnityWebRequest.Get(request.Url);
 
                 yield return www.SendWebRequest();
@@ -369,7 +401,7 @@ namespace Oxide.Plugins
                 }
 
                 // Verify that the webrequest was succesful.
-                if (www.isNetworkError || www.isHttpError)
+                if (www.result != UnityWebRequest.Result.Success)
                 {
                     // The webrequest wasn't succesful, show a message to the player and attempt to start the next download.
                     signArtist.SendMessage(request.Sender, "WebErrorOccurred", www.error);
