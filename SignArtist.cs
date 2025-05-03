@@ -19,7 +19,7 @@ using Steamworks;
 
 namespace Oxide.Plugins
 {
-    [Info("Sign Artist", "Whispers88", "1.2.5", ResourceId = 992)]
+    [Info("Sign Artist", "Whispers88", "1.2.6")]
     [Description("Allows players with the appropriate permission to import images from the internet on paintable objects")]
 
     /*********************************************************************************
@@ -673,7 +673,7 @@ namespace Oxide.Plugins
 
             public void SetImage(uint id)
             {
-                Sign.textureID = id;
+                Sign.textureIDs = new uint[] { id };
             }
 
             public bool CanUpdate(BasePlayer player)
@@ -683,7 +683,7 @@ namespace Oxide.Plugins
 
             public uint TextureId()
             {
-                return Sign.textureID;
+                return Sign.textureIDs.First();
             }
         }
 
