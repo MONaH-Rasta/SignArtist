@@ -6,16 +6,19 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
-using UnityEngine;
 using Oxide.Core.Libraries.Covalence;
+using UnityEngine;
 using UnityEngine.Networking;
+using Color = System.Drawing.Color;
+using Graphics = System.Drawing.Graphics;
 
 namespace Oxide.Plugins
 {
-    [Info("Sign Artist", "Whispers88", "1.1.9", ResourceId = 992)]
+    [Info("Sign Artist", "Whispers88", "1.2.0", ResourceId = 992)]
     [Description("Allows players with the appropriate permission to import images from the internet on paintable objects")]
 
     /*********************************************************************************
@@ -28,8 +31,11 @@ namespace Oxide.Plugins
         private Dictionary<ulong, float> cooldowns = new Dictionary<ulong, float>();
         private GameObject imageDownloaderGameObject;
         private ImageDownloader imageDownloader;
-        public SignArtistConfig Settings { get; private set; }
-        public Dictionary<string, ImageSize> ImageSizePerAsset { get; private set; }
+        SignArtistConfig Settings { get; set; }
+        Dictionary<string, ImageSize> ImageSizePerAsset { get; set; }
+
+        private const string ItemIconUrl = "https://www.rustedit.io/images/imagelibrary/{0}.png";
+
 
         /// <summary>
         /// Plugin configuration
@@ -116,8 +122,8 @@ namespace Oxide.Plugins
         private class DownloadRequest
         {
             public BasePlayer Sender { get; }
-            public Signage Sign { get; }
-            public string Url { get; }
+            public IPaintableEntity Sign { get; }
+            public string Url { get; set; }
             public bool Raw { get; }
             public bool Hor { get; }
 
@@ -128,7 +134,7 @@ namespace Oxide.Plugins
             /// <param name="player">The player that requested the download. </param>
             /// <param name="sign">The sign to add the image to. </param>
             /// <param name="raw">Should the image be stored with or without conversion to jpeg. </param>
-            public DownloadRequest(string url, BasePlayer player, Signage sign, bool raw, bool hor)
+            public DownloadRequest(string url, BasePlayer player, IPaintableEntity sign, bool raw, bool hor)
             {
                 Url = url;
                 Sender = player;
@@ -144,7 +150,7 @@ namespace Oxide.Plugins
         private class RestoreRequest
         {
             public BasePlayer Sender { get; }
-            public Signage Sign { get; }
+            public IPaintableEntity Sign { get; }
             public bool Raw { get; }
 
             /// <summary>
@@ -153,7 +159,7 @@ namespace Oxide.Plugins
             /// <param name="player">The player that requested the restore. </param>
             /// <param name="sign">The sign to restore the image from. </param>
             /// <param name="raw">Should the image be stored with or without conversion to jpeg. </param>
-            public RestoreRequest(BasePlayer player, Signage sign, bool raw)
+            public RestoreRequest(BasePlayer player, IPaintableEntity sign, bool raw)
             {
                 Sender = player;
                 Sign = sign;
@@ -214,7 +220,7 @@ namespace Oxide.Plugins
             /// <param name="player">The player that requested the download. </param>
             /// <param name="sign">The sign to add the image to. </param>
             /// <param name="raw">Should the image be stored with or without conversion to jpeg. </param>
-            public void QueueDownload(string url, BasePlayer player, Signage sign, bool raw, bool hor = false)
+            public void QueueDownload(string url, BasePlayer player, IPaintableEntity sign, bool raw, bool hor = false)
             {
                 // Check if there is already a request for this sign and show an error if there is.
                 bool existingRequest = downloadQueue.Any(request => request.Sign == sign) || restoreQueue.Any(request => request.Sign == sign);
@@ -238,7 +244,7 @@ namespace Oxide.Plugins
             /// <param name="player">The player that requested the restore. </param>
             /// <param name="sign">The sign to restore the image from. </param>
             /// <param name="raw">Should the image be stored with or without conversion to jpeg. </param>
-            public void QueueRestore(BasePlayer player, Signage sign, bool raw)
+            public void QueueRestore(BasePlayer player, IPaintableEntity sign, bool raw)
             {
                 // Check if there is already a request for this sign and show an error if there is.
                 bool existingRequest = downloadQueue.Any(request => request.Sign == sign) || restoreQueue.Any(request => request.Sign == sign);
@@ -320,15 +326,20 @@ namespace Oxide.Plugins
             /// <param name="request">The requested <see cref="DownloadRequest"/> instance. </param>
             private IEnumerator DownloadImage(DownloadRequest request)
             {
+                if (ItemManager.itemDictionaryByName.ContainsKey(request.Url))
+                {
+                    request.Url = string.Format(ItemIconUrl, request.Url);
+                }
+
                 UnityWebRequest www = UnityWebRequest.Get(request.Url);
 
                 yield return www.SendWebRequest();
 
                 // Verify that there is a valid reference to the plugin from this class.
                 if (signArtist == null)
-                    {
-                        throw new NullReferenceException("signArtist");
-                    }
+                {
+                    throw new NullReferenceException("signArtist");
+                }
 
                 // Verify that the webrequest was succesful.
                 if (www.isNetworkError || www.isHttpError)
@@ -350,96 +361,95 @@ namespace Oxide.Plugins
                     yield break;
                 }
 
-                    // Get the bytes array for the image from the webrequest and lookup the target image size for the targeted sign.
-                    byte[] imageBytes;
+                // Get the bytes array for the image from the webrequest and lookup the target image size for the targeted sign.
+                byte[] imageBytes;
 
-                    if (request.Raw)
-                    {
-                        imageBytes = www.downloadHandler.data;
-                    }
-                    else
-                    {
-                        imageBytes = GetImageBytes(www);
-                    }
+                if (request.Raw)
+                {
+                    imageBytes = www.downloadHandler.data;
+                }
+                else
+                {
+                    imageBytes = GetImageBytes(www);
+                }
 
-                    ImageSize size = GetImageSizeFor(request.Sign);
+                ImageSize size = GetImageSizeFor(request.Sign);
 
-                    // Verify that we have image size data for the targeted sign.
-                    if (size == null)
-                    {
-                        // No data was found, show a message to the player and print a detailed message to the server console and attempt to start the next download.
-                        signArtist.SendMessage(request.Sender, "ErrorOccurred");
-                        signArtist.PrintWarning($"Couldn't find the required image size for {request.Sign.PrefabName}, please report this in the plugin's thread.");
-                        StartNextDownload(true);
+                // Verify that we have image size data for the targeted sign.
+                if (size == null)
+                {
+                    // No data was found, show a message to the player and print a detailed message to the server console and attempt to start the next download.
+                    signArtist.SendMessage(request.Sender, "ErrorOccurred");
+                    signArtist.PrintWarning($"Couldn't find the required image size for {request.Sign.PrefabName}, please report this in the plugin's thread.");
+                    StartNextDownload(true);
                     www.Dispose();
                     yield break;
-                    }
+                }
 
-                    // Get the bytes array for the resized image for the targeted sign.
-                    byte[] resizedImageBytes = imageBytes.ResizeImage(size.Width, size.Height, size.ImageWidth, size.ImageHeight, signArtist.Settings.EnforceJpeg && !request.Raw);
-                    // Flip the image horizontally if needed (sign.hanging only)
-                    if (request.Hor)
-                    {
-                        var ms = new MemoryStream(resizedImageBytes);
-                        var mo = new MemoryStream();
-                        var img = Image.FromStream(ms);
-                        img.RotateFlip(RotateFlipType.RotateNoneFlipX);
-                        img.Save(mo, img.RawFormat);
-                        resizedImageBytes = mo.ToArray();
-                        mo = null;
-                        ms = null;
-                        img = null;
-                    }
+                RotateFlipType rotation = RotateFlipType.RotateNoneFlipNone;
+                if (request.Hor)
+                {
+                    rotation = RotateFlipType.RotateNoneFlipX;
+                }
 
-                    // Verify that the resized file doesn't exceed the maximum configured filesize.
-                    if (resizedImageBytes.Length > signArtist.Settings.MaxFileSizeInBytes)
-                    {
-                        // The file is too large, show a message to the player and attempt to start the next download.
-                        signArtist.SendMessage(request.Sender, "FileTooLarge", signArtist.Settings.MaxSize);
+                object rotateObj = Interface.Call("GetImageRotation", request.Sign.Entity);
+                if (rotateObj is RotateFlipType)
+                {
+                    rotation = (RotateFlipType)rotateObj;
+                }
+
+                // Get the bytes array for the resized image for the targeted sign.
+                byte[] resizedImageBytes = imageBytes.ResizeImage(size.Width, size.Height, size.ImageWidth, size.ImageHeight, signArtist.Settings.EnforceJpeg && !request.Raw, rotation);
+
+                // Verify that the resized file doesn't exceed the maximum configured filesize.
+                if (resizedImageBytes.Length > signArtist.Settings.MaxFileSizeInBytes)
+                {
+                    // The file is too large, show a message to the player and attempt to start the next download.
+                    signArtist.SendMessage(request.Sender, "FileTooLarge", signArtist.Settings.MaxSize);
                     www.Dispose();
                     StartNextDownload(true);
 
-                        yield break;
-                    }
+                    yield break;
+                }
 
-                    // Check if the sign already has a texture assigned to it.
-                    if (request.Sign.textureID > 0)
-                    {
-                        // A texture was already assigned, remove this file to make room for the new one.
-                        FileStorage.server.Remove(request.Sign.textureID, FileStorage.Type.png, request.Sign.net.ID);
-                    }
+                // Check if the sign already has a texture assigned to it.
+                if (request.Sign.TextureId() > 0)
+                {
+                    // A texture was already assigned, remove this file to make room for the new one.
+                    FileStorage.server.Remove(request.Sign.TextureId(), FileStorage.Type.png, request.Sign.NetId);
+                }
 
-                    // Create the image on the filestorage and send out a network update for the sign.
-                    request.Sign.textureID = FileStorage.server.Store(resizedImageBytes, FileStorage.Type.png, request.Sign.net.ID);
-                    request.Sign.SendNetworkUpdate();
+                // Create the image on the filestorage and send out a network update for the sign.
+                request.Sign.SetImage(FileStorage.server.Store(resizedImageBytes, FileStorage.Type.png, request.Sign.NetId));
+                request.Sign.SendNetworkUpdate();
 
-                    // Notify the player that the image was loaded.
-                    signArtist.SendMessage(request.Sender, "ImageLoaded");
+                // Notify the player that the image was loaded.
+                signArtist.SendMessage(request.Sender, "ImageLoaded");
 
-                    // Call the Oxide hook 'OnSignUpdated' to notify other plugins of the update event.
-                    Interface.Oxide.CallHook("OnSignUpdated", request.Sign, request.Sender);
+                // Call the Oxide hook 'OnSignUpdated' to notify other plugins of the update event.
+                Interface.Oxide.CallHook("OnSignUpdated", request.Sign, request.Sender);
 
-                    // Check if logging to console is enabled.
-                    if (signArtist.Settings.ConsoleLogging)
-                    {
-                        // Console logging is enabled, show a message in the server console.
-                        signArtist.Puts(signArtist.GetTranslation("LogEntry"), request.Sender.displayName,
-                            request.Sender.userID, request.Sign.textureID, request.Sign.ShortPrefabName, request.Url);
-                    }
+                // Check if logging to console is enabled.
+                if (signArtist.Settings.ConsoleLogging)
+                {
+                    // Console logging is enabled, show a message in the server console.
+                    signArtist.Puts(signArtist.GetTranslation("LogEntry"), request.Sender.displayName,
+                        request.Sender.userID, request.Sign.TextureId(), request.Sign.ShortPrefabName, request.Url);
+                }
 
-                    // Check if logging to file is enabled.
-                    if (signArtist.Settings.FileLogging)
-                    {
-                        // File logging is enabled, add an entry to the logfile.
-                        signArtist.LogToFile("log",
-                            string.Format(signArtist.GetTranslation("LogEntry"), request.Sender.displayName,
-                                request.Sender.userID, request.Sign.textureID, request.Sign.ShortPrefabName,
-                                request.Url), signArtist);
-                    }
+                // Check if logging to file is enabled.
+                if (signArtist.Settings.FileLogging)
+                {
+                    // File logging is enabled, add an entry to the logfile.
+                    signArtist.LogToFile("log",
+                        string.Format(signArtist.GetTranslation("LogEntry"), request.Sender.displayName,
+                            request.Sender.userID, request.Sign.TextureId(), request.Sign.ShortPrefabName,
+                            request.Url), signArtist);
+                }
 
-                    // Attempt to start the next download.
-                    StartNextDownload(true);
-                     www.Dispose();
+                // Attempt to start the next download.
+                StartNextDownload(true);
+                www.Dispose();
 
             }
 
@@ -459,7 +469,7 @@ namespace Oxide.Plugins
                 byte[] imageBytes;
 
                 // Check if the sign already has a texture assigned to it.
-                if (request.Sign.textureID == 0)
+                if (request.Sign.TextureId() == 0)
                 {
                     // No texture was previously assigned, show a message to the player.
                     signArtist.SendMessage(request.Sender, "RestoreErrorOccurred");
@@ -469,7 +479,7 @@ namespace Oxide.Plugins
                 }
 
                 // Cache the byte array of the currently stored file.
-                imageBytes = FileStorage.server.Get(request.Sign.textureID, FileStorage.Type.png, request.Sign.net.ID);
+                imageBytes = FileStorage.server.Get(request.Sign.TextureId(), FileStorage.Type.png, request.Sign.NetId);
                 ImageSize size = GetImageSizeFor(request.Sign);
 
                 // Verify that we have image size data for the targeted sign.
@@ -484,13 +494,13 @@ namespace Oxide.Plugins
                 }
 
                 // Remove the texture from the FileStorage.
-                FileStorage.server.Remove(request.Sign.textureID, FileStorage.Type.png, request.Sign.net.ID);
+                FileStorage.server.Remove(request.Sign.TextureId(), FileStorage.Type.png, request.Sign.NetId);
 
                 // Get the bytes array for the resized image for the targeted sign.
                 byte[] resizedImageBytes = imageBytes.ResizeImage(size.Width, size.Height, size.ImageWidth, size.ImageHeight, signArtist.Settings.EnforceJpeg && !request.Raw);
 
                 // Create the image on the filestorage and send out a network update for the sign.
-                request.Sign.textureID = FileStorage.server.Store(resizedImageBytes, FileStorage.Type.png, request.Sign.net.ID);
+                request.Sign.SetImage(FileStorage.server.Store(resizedImageBytes, FileStorage.Type.png, request.Sign.NetId));
                 request.Sign.SendNetworkUpdate();
 
                 // Notify the player that the image was loaded.
@@ -507,11 +517,11 @@ namespace Oxide.Plugins
             /// Gets the target image size for a <see cref="Signage"/>.
             /// </summary>
             /// <param name="signage"></param>
-            private ImageSize GetImageSizeFor(Signage signage)
+            private ImageSize GetImageSizeFor(IPaintableEntity signage)
             {
-                if (signArtist.ImageSizePerAsset.ContainsKey(signage.PrefabName))
+                if (signArtist.ImageSizePerAsset.ContainsKey(signage.ShortPrefabName))
                 {
-                    return signArtist.ImageSizePerAsset[signage.PrefabName];
+                    return signArtist.ImageSizePerAsset[signage.ShortPrefabName];
                 }
 
                 return null;
@@ -543,6 +553,93 @@ namespace Oxide.Plugins
             }
         }
 
+        private interface IBasePaintableEntity
+        {
+            BaseEntity Entity { get; }
+            string PrefabName { get; }
+            string ShortPrefabName { get; }
+            uint NetId { get; }
+            void SendNetworkUpdate();
+        }
+
+        private interface IPaintableEntity : IBasePaintableEntity
+        {
+            void SetImage(uint id);
+            bool CanUpdate(BasePlayer player);
+            uint TextureId();
+        }
+
+        private class BasePaintableEntity : IBasePaintableEntity
+        {
+            public BaseEntity Entity { get; }
+            public string PrefabName { get; }
+            public string ShortPrefabName { get; }
+            public uint NetId { get; }
+
+            protected BasePaintableEntity(BaseEntity entity)
+            {
+                Entity = entity;
+                PrefabName = Entity.PrefabName;
+                ShortPrefabName = Entity.ShortPrefabName;
+                NetId = Entity.net.ID;
+            }
+
+            public void SendNetworkUpdate()
+            {
+                Entity.SendNetworkUpdate();
+            }
+        }
+
+        private class PaintableSignage : BasePaintableEntity, IPaintableEntity
+        {
+            public Signage Sign { get; set; }
+
+            public PaintableSignage(Signage sign) : base(sign)
+            {
+                Sign = sign;
+            }
+
+            public void SetImage(uint id)
+            {
+                Sign.textureID = id;
+            }
+
+            public bool CanUpdate(BasePlayer player)
+            {
+                return Sign.CanUpdateSign(player);
+            }
+
+            public uint TextureId()
+            {
+                return Sign.textureID;
+            }
+        }
+
+        private class PaintableFrame : BasePaintableEntity, IPaintableEntity
+        {
+            public PhotoFrame Sign { get; set; }
+
+            public PaintableFrame(PhotoFrame sign) : base(sign)
+            {
+                Sign = sign;
+            }
+
+            public void SetImage(uint id)
+            {
+                Sign._overlayTextureCrc = id;
+            }
+
+            public bool CanUpdate(BasePlayer player)
+            {
+                return Sign.CanUpdateSign(player);
+            }
+
+            public uint TextureId()
+            {
+                return Sign._overlayTextureCrc;
+            }
+        }
+
         /// <summary>
         /// Oxide hook that is triggered when the plugin is loaded.
         /// </summary>
@@ -560,40 +657,46 @@ namespace Oxide.Plugins
 
             AddCovalenceCommand("sil", "SilCommand");
             AddCovalenceCommand("silt", "SiltCommand");
+            AddCovalenceCommand("sili", "SilItemCommand");
             AddCovalenceCommand("silrestore", "RestoreCommand");
 
             // Initialize the dictionary with all paintable object assets and their target sizes
-            ImageSizePerAsset = new Dictionary<string, ImageSize>()
+            ImageSizePerAsset = new Dictionary<string, ImageSize>
             {
                 // Picture Frames
-                ["assets/prefabs/deployable/signs/sign.pictureframe.landscape.prefab"] = new ImageSize(256, 128), // Landscape Picture Frame
-                ["assets/prefabs/deployable/signs/sign.pictureframe.portrait.prefab"] = new ImageSize(128, 256),  // Portrait Picture Frame
-                ["assets/prefabs/deployable/signs/sign.pictureframe.tall.prefab"] = new ImageSize(128, 512),      // Tall Picture Frame
-                ["assets/prefabs/deployable/signs/sign.pictureframe.xl.prefab"] = new ImageSize(512, 512),        // XL Picture Frame
-                ["assets/prefabs/deployable/signs/sign.pictureframe.xxl.prefab"] = new ImageSize(1024, 512),      // XXL Picture Frame
+                ["sign.pictureframe.landscape"] = new ImageSize(256, 128), // Landscape Picture Frame
+                ["sign.pictureframe.portrait"] = new ImageSize(128, 256),  // Portrait Picture Frame
+                ["sign.pictureframe.tall"] = new ImageSize(128, 512),      // Tall Picture Frame
+                ["sign.pictureframe.xl"] = new ImageSize(512, 512),        // XL Picture Frame
+                ["sign.pictureframe.xxl"] = new ImageSize(1024, 512),      // XXL Picture Frame
 
                 // Wooden Signs
-                ["assets/prefabs/deployable/signs/sign.small.wood.prefab"] = new ImageSize(128, 64),              // Small Wooden Sign
-                ["assets/prefabs/deployable/signs/sign.medium.wood.prefab"] = new ImageSize(256, 128),            // Wooden Sign
-                ["assets/prefabs/deployable/signs/sign.large.wood.prefab"] = new ImageSize(256, 128),             // Large Wooden Sign
-                ["assets/prefabs/deployable/signs/sign.huge.wood.prefab"] = new ImageSize(512, 128),              // Huge Wooden Sign
+                ["sign.small.wood"] = new ImageSize(128, 64),              // Small Wooden Sign
+                ["sign.medium.wood"] = new ImageSize(256, 128),            // Wooden Sign
+                ["sign.large.wood"] = new ImageSize(256, 128),             // Large Wooden Sign
+                ["sign.huge.wood"] = new ImageSize(512, 128),              // Huge Wooden Sign
 
                 // Banners
-                ["assets/prefabs/deployable/signs/sign.hanging.banner.large.prefab"] = new ImageSize(64, 256),    // Large Banner Hanging
-                ["assets/prefabs/deployable/signs/sign.pole.banner.large.prefab"] = new ImageSize(64, 256),       // Large Banner on Pole
+                ["sign.hanging.banner.large"] = new ImageSize(64, 256),    // Large Banner Hanging
+                ["sign.pole.banner.large"] = new ImageSize(64, 256),       // Large Banner on Pole
 
                 // Hanging Signs
-                ["assets/prefabs/deployable/signs/sign.hanging.prefab"] = new ImageSize(128, 256),                // Two Sided Hanging Sign
-                ["assets/prefabs/deployable/signs/sign.hanging.ornate.prefab"] = new ImageSize(256, 128),         // Two Sided Ornate Hanging Sign
+                ["sign.hanging"] = new ImageSize(128, 256),                // Two Sided Hanging Sign
+                ["sign.hanging.ornate"] = new ImageSize(256, 128),         // Two Sided Ornate Hanging Sign
 
                 // Town Signs
-                ["assets/prefabs/deployable/signs/sign.post.single.prefab"] = new ImageSize(128, 64),             // Single Sign Post
-                ["assets/prefabs/deployable/signs/sign.post.double.prefab"] = new ImageSize(256, 256),            // Double Sign Post
-                ["assets/prefabs/deployable/signs/sign.post.town.prefab"] = new ImageSize(256, 128),              // One Sided Town Sign Post
-                ["assets/prefabs/deployable/signs/sign.post.town.roof.prefab"] = new ImageSize(256, 128),         // Two Sided Town Sign Post
+                ["sign.post.single"] = new ImageSize(128, 64),             // Single Sign Post
+                ["sign.post.double"] = new ImageSize(256, 256),            // Double Sign Post
+                ["sign.post.town"] = new ImageSize(256, 128),              // One Sided Town Sign Post
+                ["sign.post.town.roof"] = new ImageSize(256, 128),         // Two Sided Town Sign Post
+
+                ["photoframe.large"] = new ImageSize(320, 240),
+                ["photoframe.portrait"] = new ImageSize(320, 384),
+                ["photoframe.landscape"] = new ImageSize(320, 240),
+
 
                 // Other paintable assets
-                ["assets/prefabs/deployable/spinner_wheel/spinner.wheel.deployed.prefab"] = new ImageSize(512, 512, 285, 285), // Spinning Wheel
+                ["spinner.wheel.deployed"] = new ImageSize(512, 512, 285, 285), // Spinning Wheel
             };
         }
 
@@ -619,6 +722,7 @@ namespace Oxide.Plugins
                 ["NoSignFound"] = "Unable to find a sign! Make sure you are looking at one and that you are not too far away from it.",
                 ["Cooldown"] = "You can't use the command yet! Remaining cooldown: {0}.",
                 ["SignNotOwned"] = "You can't change this sign as it is protected by a tool cupboard.",
+                ["NoItemHeld"] = "You're not holding an item.",
                 ["ActionQueuedAlready"] = "An action has already been queued for this sign, please wait for this action to complete.",
                 ["SyntaxSilCommand"] = "Syntax error!\nSyntax: /sil <url> [raw]",
                 ["SyntaxSiltCommand"] = "Syntax error!\nSyntax: /silt <message> [<fontsize:number>] [<color:hex value>] [<bgcolor:hex value>] [raw]",
@@ -725,7 +829,7 @@ namespace Oxide.Plugins
             }
 
             // Check if the player is looking at a sign.
-            Signage sign;
+            IPaintableEntity sign;
             if (!IsLookingAtSign(player, out sign))
             {
                 // The player isn't looking at a sign or is too far away from it, show an error message.
@@ -762,7 +866,7 @@ namespace Oxide.Plugins
             }
 
             // This sign pastes in reverse, so we'll check and set a var to flip it
-            bool hor = sign.LookupPrefab().name == "sign.hanging" ? true : false;
+            bool hor = sign.ShortPrefabName == "sign.hanging";
 
             // Notify the player that it is added to the queue.
             SendMessage(player, "DownloadQueued");
@@ -774,6 +878,55 @@ namespace Oxide.Plugins
             Interface.Oxide.CallHook("OnImagePost", player, args[0]);
 
             // Set the cooldown on the command for the player if the cooldown setting is enabled.
+            SetCooldown(player);
+        }
+
+        [Command("sili"), Permission("signartist.url")]
+        private void SilItemCommand(IPlayer iplayer, string command, string[] args)
+        {
+            var player = iplayer.Object as BasePlayer;
+            if (!HasPermission(player, "signartist.url"))
+            {
+                SendMessage(player, "NoPermission");
+                return;
+            }
+
+            if (HasCooldown(player))
+            {
+                SendMessage(player, "Cooldown", FormatCooldown(GetCooldown(player)));
+                return;
+            }
+
+            IPaintableEntity sign;
+            if (!IsLookingAtSign(player, out sign))
+            {
+                SendMessage(player, "NoSignFound");
+                return;
+            }
+
+            if (!CanChangeSign(player, sign))
+            {
+                SendMessage(player, "SignNotOwned");
+                return;
+            }
+
+            Item held = player.GetActiveItem();
+            if (held == null)
+            {
+                SendMessage(player, "NoItemHeld");
+                return;
+            }
+
+            string shortname = held.info.shortname;
+
+            bool hor = sign.ShortPrefabName == "sign.hanging";
+
+            SendMessage(player, "DownloadQueued");
+
+            imageDownloader.QueueDownload(shortname, player, sign, false, hor);
+
+            Interface.Oxide.CallHook("OnImagePost", player, shortname);
+
             SetCooldown(player);
         }
 
@@ -815,7 +968,7 @@ namespace Oxide.Plugins
             }
 
             // Check if the player is looking at a sign.
-            Signage sign;
+            IPaintableEntity sign;
             if (!IsLookingAtSign(player, out sign))
             {
                 // The player isn't looking at a sign or is too far away from it, show an error message.
@@ -875,9 +1028,9 @@ namespace Oxide.Plugins
 
             // Get the size for the image
             ImageSize size = null;
-            if (ImageSizePerAsset.ContainsKey(sign.PrefabName))
+            if (ImageSizePerAsset.ContainsKey(sign.ShortPrefabName))
             {
-                size = ImageSizePerAsset[sign.PrefabName];
+                size = ImageSizePerAsset[sign.ShortPrefabName];
             }
 
             // Verify that we have image size data for the targeted sign.
@@ -897,7 +1050,7 @@ namespace Oxide.Plugins
             SendMessage(player, "DownloadQueued");
 
             // This sign pastes in reverse, so we'll check and set a var to flip it
-            bool hor = sign.LookupPrefab().name == "sign.hanging" ? true : false;
+            bool hor = sign.ShortPrefabName == "sign.hanging";
 
             // Queue the download of the specified image.
             imageDownloader.QueueDownload(url, player, sign, raw, hor);
@@ -916,14 +1069,14 @@ namespace Oxide.Plugins
             string format = "png32";
 
             ImageSize size = null;
-            if (ImageSizePerAsset.ContainsKey(sign.PrefabName))
+            if (ImageSizePerAsset.ContainsKey(sign.ShortPrefabName))
             {
-                size = ImageSizePerAsset[sign.PrefabName];
+                size = ImageSizePerAsset[sign.ShortPrefabName];
             }
 
             // Combine all the values into the url;
             string url = $"http://assets.imgix.net/~text?fm={format}&txtalign=middle,center&txtsize={fontsize}&txt={message}&w={size.ImageWidth}&h={size.ImageHeight}&txtclr={color}&bg={bgcolor}";
-            imageDownloader.QueueDownload(url, player, sign, false);
+            imageDownloader.QueueDownload(url, player, new PaintableSignage(sign), false);
         }
 
         /// <summary>
@@ -967,7 +1120,7 @@ namespace Oxide.Plugins
             // Check if the player is looking at a sign if not all signs should be restored.
             if (!all)
             {
-                Signage sign;
+                IPaintableEntity sign;
                 if (!IsLookingAtSign(player, out sign))
                 {
                     // The player isn't looking at a sign or is too far away from it, show an error message.
@@ -994,7 +1147,7 @@ namespace Oxide.Plugins
             // Queue every sign to be restored.
             foreach (Signage sign in allSigns)
             {
-                imageDownloader.QueueRestore(player, sign, raw);
+                imageDownloader.QueueRestore(player, new PaintableSignage(sign), raw);
             }
         }
 
@@ -1106,7 +1259,7 @@ namespace Oxide.Plugins
         /// </summary>
         /// <param name="player">The player to check. </param>
         /// <param name="sign">When this method returns, contains the <see cref="Signage"/> the player contained in <paramref name="player" /> is looking at, or null if the player isn't looking at a sign. </param>
-        private bool IsLookingAtSign(BasePlayer player, out Signage sign)
+        private bool IsLookingAtSign(BasePlayer player, out IPaintableEntity sign)
         {
             RaycastHit hit;
             sign = null;
@@ -1117,7 +1270,15 @@ namespace Oxide.Plugins
             {
                 // Attempt to grab the Signage entity, if there is none this will set the sign to null,
                 // otherwise this will set it to the sign the player is looking at.
-                sign = hit.GetEntity() as Signage;
+                BaseEntity entity = hit.GetEntity();
+                if (entity is Signage)
+                {
+                    sign = new PaintableSignage(entity as Signage);
+                }
+                else if (entity is PhotoFrame)
+                {
+                    sign = new PaintableFrame(entity as PhotoFrame);
+                }
             }
 
             // Return true or false depending on if we found a sign.
@@ -1130,9 +1291,9 @@ namespace Oxide.Plugins
         /// <param name="player">The player to check. </param>
         /// <param name="sign">The sign to check. </param>
         /// <returns></returns>
-        private bool CanChangeSign(BasePlayer player, Signage sign)
+        private bool CanChangeSign(BasePlayer player, IPaintableEntity sign)
         {
-            return sign.CanUpdateSign(player) || HasPermission(player, "signartist.ignoreowner");
+            return sign.CanUpdate(player) || HasPermission(player, "signartist.ignoreowner");
         }
 
         /// <summary>
@@ -1184,54 +1345,108 @@ namespace Oxide.Plugins
             /// <param name="targetWidth">New image width. </param>
             /// <param name="targetHeight">New image height. </param>
             /// <param name="enforceJpeg"><see cref="bool"/> value, true to save the images as JPG, false for PNG. </param>
-            public static byte[] ResizeImage(this byte[] bytes, int width, int height, int targetWidth, int targetHeight, bool enforceJpeg)
+            /// <param name="rotation"></param>
+            public static byte[] ResizeImage(this byte[] bytes, int width, int height, int targetWidth, int targetHeight, bool enforceJpeg, RotateFlipType rotation = RotateFlipType.RotateNoneFlipNone)
             {
                 byte[] resizedImageBytes;
 
-                using (MemoryStream originalBytesStream = new MemoryStream(), resizedBytesStream = new MemoryStream())
+                using (MemoryStream originalBytesStream = new MemoryStream(bytes))
                 {
-                    // Write the downloaded image bytes array to the memorystream and create a new Bitmap from it.
-                    originalBytesStream.Write(bytes, 0, bytes.Length);
-                    Bitmap image = new Bitmap(originalBytesStream);
-
-                    // Check if the width and height match, if they don't we will have to resize this image.
-                    if (image.Width != width || image.Height != height)
+                    using (Bitmap image = new Bitmap(originalBytesStream))
                     {
-                        // Create a new Bitmap with the target size.
-                        Bitmap resizedImage = new Bitmap(width, height);
-
-                        // Draw the original image onto the new image and resize it accordingly.
-                        using (System.Drawing.Graphics graphics = System.Drawing.Graphics.FromImage(resizedImage))
+                        if (rotation != RotateFlipType.RotateNoneFlipNone)
                         {
-                            graphics.DrawImage(image, new Rectangle(0, 0, targetWidth, targetHeight));
+                            image.RotateFlip(rotation);
                         }
 
-                        // Save the bitmap to a MemoryStream as either Jpeg or Png.
-                        if (enforceJpeg)
+                        // Check if the width and height match, if they don't we will have to resize this image.
+                        if (image.Width != width || image.Height != height)
                         {
-                            resizedImage.Save(resizedBytesStream, ImageFormat.Jpeg);
+                            // Create a new Bitmap with the target size.
+                            using (Bitmap resizedImage = ResizeImage(image, targetWidth, targetHeight))
+                            {
+                                TimestampImage(resizedImage);
+
+                                using (MemoryStream resizedBytesStream = new MemoryStream())
+                                {
+                                    // Save the bitmap to a MemoryStream as either Jpeg or Png.
+                                    if (enforceJpeg)
+                                    {
+                                        resizedImage.Save(resizedBytesStream, ImageFormat.Jpeg);
+                                    }
+                                    else
+                                    {
+                                        resizedImage.Save(resizedBytesStream, ImageFormat.Png);
+                                    }
+
+                                    // Grab the bytes array from the new image's MemoryStream and dispose of the resized image Bitmap.
+                                    resizedImageBytes = resizedBytesStream.ToArray();
+                                }
+                            }
                         }
                         else
                         {
-                            resizedImage.Save(resizedBytesStream, ImageFormat.Png);
+                            TimestampImage(image);
+
+                            // The image has the correct size so we can just return the original bytes without doing any resizing.
+                            resizedImageBytes = bytes;
                         }
-
-                        // Grab the bytes array from the new image's MemoryStream and dispose of the resized image Bitmap.
-                        resizedImageBytes = resizedBytesStream.ToArray();
-                        resizedImage.Dispose();
                     }
-                    else
-                    {
-                        // The image has the correct size so we can just return the original bytes without doing any resizing.
-                        resizedImageBytes = bytes;
-                    }
-
-                    // Dispose of the original image Bitmap.
-                    image.Dispose();
                 }
 
                 // Return the bytes array.
                 return resizedImageBytes;
+            }
+
+            /// <summary>
+            /// Resize the image to the specified width and height.
+            /// </summary>
+            /// <param name="image">The image to resize.</param>
+            /// <param name="width">The width to resize to.</param>
+            /// <param name="height">The height to resize to.</param>
+            /// <returns>The resized image.</returns>
+            private static Bitmap ResizeImage(Image image, int width, int height)
+            {
+                Rectangle destRect = new Rectangle(0, 0, width, height);
+                Bitmap destImage = new Bitmap(width, height);
+
+                destImage.SetResolution(image.HorizontalResolution, image.VerticalResolution);
+
+                using (Graphics graphics = System.Drawing.Graphics.FromImage(destImage))
+                {
+                    graphics.CompositingMode = CompositingMode.SourceCopy;
+                    graphics.CompositingQuality = CompositingQuality.HighQuality;
+                    graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    graphics.SmoothingMode = SmoothingMode.HighQuality;
+                    graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+
+                    using (ImageAttributes wrapMode = new ImageAttributes())
+                    {
+                        wrapMode.SetWrapMode(System.Drawing.Drawing2D.WrapMode.TileFlipXY);
+                        graphics.DrawImage(image, destRect, 0, 0, image.Width, image.Height, GraphicsUnit.Pixel, wrapMode);
+                    }
+                }
+
+                return destImage;
+            }
+
+            private static void TimestampImage(Bitmap image)
+            {
+                //Rust images are crc and if we have the same image it is deleted from the file storage
+                //Here we changed the last few pixels of the image with colors based off the current milliseconds since wipe
+                //This will generate a unique image every time and allow us to use the same image multiple times
+                Color pixel = Color.FromArgb(UnityEngine.Random.Range(0, 256), UnityEngine.Random.Range(0, 256), UnityEngine.Random.Range(0, 256), UnityEngine.Random.Range(0, 256));
+                image.SetPixel(image.Width - 1, image.Height - 1, pixel);
+            }
+
+            private static int GetValueAtIndex(byte[] bytes, int index)
+            {
+                if (index >= bytes.Length)
+                {
+                    return 0;
+                }
+
+                return Convert.ToInt32(bytes[index]);
             }
 
             /// <summary>
