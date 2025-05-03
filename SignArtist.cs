@@ -1,5 +1,4 @@
 // Reference: System.Drawing
-
 using Newtonsoft.Json;
 using Oxide.Core;
 using Oxide.Plugins.SignArtistClasses;
@@ -13,10 +12,11 @@ using System.IO;
 using System.Linq;
 using UnityEngine;
 using Oxide.Core.Libraries.Covalence;
+using Oxide.Core.Plugins;
 
 namespace Oxide.Plugins
 {
-    [Info("Sign Artist", "Mughisi", "1.1.6", ResourceId = 992)]
+    [Info("Sign Artist", "RFC1920", "1.1.7", ResourceId = 992)]
     [Description("Allows players with the appropriate permission to import images from the internet on paintable objects")]
 
     /*********************************************************************************
@@ -884,6 +884,23 @@ namespace Oxide.Plugins
 
             // Set the cooldown on the command for the player if the cooldown setting is enabled.
             SetCooldown(player);
+        }
+
+        // This can be Call(ed) by other plugins to put text on a sign
+        void signText(BasePlayer player, Signage sign, string message, int fontsize=30, string color="FFFFFF", string bgcolor="000000")
+        {
+            //Puts($"signText called with {message}");
+            string format = "png32";
+
+            ImageSize size = null;
+            if (ImageSizePerAsset.ContainsKey(sign.PrefabName))
+            {
+                size = ImageSizePerAsset[sign.PrefabName];
+            }
+
+            // Combine all the values into the url;
+            string url = $"http://assets.imgix.net/~text?fm={format}&txtalign=middle,center&txtsize={fontsize}&txt={message}&w={size.ImageWidth}&h={size.ImageHeight}&txtclr={color}&bg={bgcolor}";
+            imageDownloader.QueueDownload(url, player, sign, false);
         }
 
         /// <summary>
