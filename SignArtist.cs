@@ -3,7 +3,6 @@ using Newtonsoft.Json;
 using Oxide.Core;
 using Oxide.Plugins.SignArtistClasses;
 using System;
-using System.Text;
 using System.Collections;
 using System.Collections.Generic;
 using System.Drawing;
@@ -12,11 +11,11 @@ using System.IO;
 using System.Linq;
 using UnityEngine;
 using Oxide.Core.Libraries.Covalence;
-using Oxide.Core.Plugins;
+using UnityEngine.Networking;
 
 namespace Oxide.Plugins
 {
-    [Info("Sign Artist", "RFC1920", "1.1.8", ResourceId = 992)]
+    [Info("Sign Artist", "Whispers88", "1.1.9", ResourceId = 992)]
     [Description("Allows players with the appropriate permission to import images from the internet on paintable objects")]
 
     /*********************************************************************************
@@ -321,43 +320,42 @@ namespace Oxide.Plugins
             /// <param name="request">The requested <see cref="DownloadRequest"/> instance. </param>
             private IEnumerator DownloadImage(DownloadRequest request)
             {
-                using (WWW www = new WWW(request.Url))
-                {
-                    // Wait for the webrequest to complete
-                    yield return www;
+                UnityWebRequest www = UnityWebRequest.Get(request.Url);
 
-                    // Verify that there is a valid reference to the plugin from this class.
-                    if (signArtist == null)
+                yield return www.SendWebRequest();
+
+                // Verify that there is a valid reference to the plugin from this class.
+                if (signArtist == null)
                     {
                         throw new NullReferenceException("signArtist");
                     }
 
-                    // Verify that the webrequest was succesful.
-                    if (www.error != null)
-                    {
-                        // The webrequest wasn't succesful, show a message to the player and attempt to start the next download.
-                        signArtist.SendMessage(request.Sender, "WebErrorOccurred", www.error);
-                        StartNextDownload(true);
+                // Verify that the webrequest was succesful.
+                if (www.isNetworkError || www.isHttpError)
+                {
+                    // The webrequest wasn't succesful, show a message to the player and attempt to start the next download.
+                    signArtist.SendMessage(request.Sender, "WebErrorOccurred", www.error);
+                    www.Dispose();
+                    StartNextDownload(true);
+                    yield break;
+                }
 
-                        yield break;
-                    }
-
-                    // Verify that the file doesn't exceed the maximum configured filesize.
-                    if (www.bytesDownloaded > signArtist.Settings.MaxFileSizeInBytes)
-                    {
-                        // The file is too large, show a message to the player and attempt to start the next download.
-                        signArtist.SendMessage(request.Sender, "FileTooLarge", signArtist.Settings.MaxSize);
-                        StartNextDownload(true);
-
-                        yield break;
-                    }
+                // Verify that the file doesn't exceed the maximum configured filesize.
+                if (www.downloadedBytes > signArtist.Settings.MaxFileSizeInBytes)
+                {
+                    // The file is too large, show a message to the player and attempt to start the next download.
+                    signArtist.SendMessage(request.Sender, "FileTooLarge", signArtist.Settings.MaxSize);
+                    www.Dispose();
+                    StartNextDownload(true);
+                    yield break;
+                }
 
                     // Get the bytes array for the image from the webrequest and lookup the target image size for the targeted sign.
                     byte[] imageBytes;
 
                     if (request.Raw)
                     {
-                        imageBytes = www.bytes;
+                        imageBytes = www.downloadHandler.data;
                     }
                     else
                     {
@@ -373,20 +371,20 @@ namespace Oxide.Plugins
                         signArtist.SendMessage(request.Sender, "ErrorOccurred");
                         signArtist.PrintWarning($"Couldn't find the required image size for {request.Sign.PrefabName}, please report this in the plugin's thread.");
                         StartNextDownload(true);
-
-                        yield break;
+                    www.Dispose();
+                    yield break;
                     }
 
                     // Get the bytes array for the resized image for the targeted sign.
                     byte[] resizedImageBytes = imageBytes.ResizeImage(size.Width, size.Height, size.ImageWidth, size.ImageHeight, signArtist.Settings.EnforceJpeg && !request.Raw);
                     // Flip the image horizontally if needed (sign.hanging only)
-                    if(request.Hor)
+                    if (request.Hor)
                     {
                         var ms = new MemoryStream(resizedImageBytes);
                         var mo = new MemoryStream();
                         var img = Image.FromStream(ms);
                         img.RotateFlip(RotateFlipType.RotateNoneFlipX);
-                        img.Save(mo,img.RawFormat);
+                        img.Save(mo, img.RawFormat);
                         resizedImageBytes = mo.ToArray();
                         mo = null;
                         ms = null;
@@ -398,7 +396,8 @@ namespace Oxide.Plugins
                     {
                         // The file is too large, show a message to the player and attempt to start the next download.
                         signArtist.SendMessage(request.Sender, "FileTooLarge", signArtist.Settings.MaxSize);
-                        StartNextDownload(true);
+                    www.Dispose();
+                    StartNextDownload(true);
 
                         yield break;
                     }
@@ -440,7 +439,8 @@ namespace Oxide.Plugins
 
                     // Attempt to start the next download.
                     StartNextDownload(true);
-                }
+                     www.Dispose();
+
             }
 
             /// <summary>
@@ -521,9 +521,11 @@ namespace Oxide.Plugins
             /// Converts the <see cref="Texture2D"/> from the webrequest to a <see cref="byte"/> array.
             /// </summary>
             /// <param name="www">The completed webrequest. </param>
-            private byte[] GetImageBytes(WWW www)
+            private byte[] GetImageBytes(UnityWebRequest www)
             {
-                Texture2D texture = www.texture;
+                Texture2D texture = new Texture2D(2, 2);
+                texture.LoadImage(www.downloadHandler.data);
+
                 byte[] image;
 
                 if (texture.format == TextureFormat.ARGB32 && !signArtist.Settings.EnforceJpeg)
@@ -760,7 +762,7 @@ namespace Oxide.Plugins
             }
 
             // This sign pastes in reverse, so we'll check and set a var to flip it
-            bool hor =  sign.LookupPrefab().name == "sign.hanging" ? true : false;
+            bool hor = sign.LookupPrefab().name == "sign.hanging" ? true : false;
 
             // Notify the player that it is added to the queue.
             SendMessage(player, "DownloadQueued");
@@ -895,7 +897,7 @@ namespace Oxide.Plugins
             SendMessage(player, "DownloadQueued");
 
             // This sign pastes in reverse, so we'll check and set a var to flip it
-            bool hor =  sign.LookupPrefab().name == "sign.hanging" ? true : false;
+            bool hor = sign.LookupPrefab().name == "sign.hanging" ? true : false;
 
             // Queue the download of the specified image.
             imageDownloader.QueueDownload(url, player, sign, raw, hor);
@@ -908,7 +910,7 @@ namespace Oxide.Plugins
         }
 
         // This can be Call(ed) by other plugins to put text on a sign
-        void signText(BasePlayer player, Signage sign, string message, int fontsize=30, string color="FFFFFF", string bgcolor="000000")
+        void signText(BasePlayer player, Signage sign, string message, int fontsize = 30, string color = "FFFFFF", string bgcolor = "000000")
         {
             //Puts($"signText called with {message}");
             string format = "png32";
