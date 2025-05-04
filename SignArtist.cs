@@ -21,7 +21,7 @@ using Steamworks;
 
 namespace Oxide.Plugins
 {
-    [Info("Sign Artist", "Whispers88", "1.4.3")]
+    [Info("Sign Artist", "Whispers88", "1.4.4")]
     [Description("Allows players with the appropriate permission to import images from the internet on paintable objects")]
 
     /*********************************************************************************
@@ -352,6 +352,37 @@ namespace Oxide.Plugins
             /// Downloads the image and adds it to the sign.
             /// </summary>
             /// <param name="request">The requested <see cref="DownloadRequest"></see> instance. </param>
+            /// 
+            public class SizeLimitingHandler : DownloadHandlerScript
+            {
+                private int maxSizeBytes;
+                private int receivedBytes = 0;
+                private List<byte> data = new List<byte>();
+
+                public bool Aborted { get; private set; } = false;
+
+                public SizeLimitingHandler(int maxSizeBytes) : base(new byte[1024])
+                {
+                    this.maxSizeBytes = maxSizeBytes;
+                }
+
+                protected override bool ReceiveData(byte[] buffer, int dataLength)
+                {
+                    receivedBytes += dataLength;
+
+                    if (receivedBytes > maxSizeBytes)
+                    {
+                        Aborted = true;
+                        return false;
+                    }
+
+                    data.AddRange(buffer.Take(dataLength));
+                    return true;
+                }
+
+                public byte[] GetData() => data.ToArray();
+            }
+
             private IEnumerator DownloadImage(DownloadRequest request)
             {
                 if (ItemManager.itemDictionaryByName.ContainsKey(request.Url))
@@ -371,7 +402,9 @@ namespace Oxide.Plugins
                     head.Dispose();
                     yield break;
                 }
+
                 string contentlength = head.GetResponseHeader("Content-Length");
+
                 if (string.IsNullOrEmpty(contentlength))
                 {
                     head.Dispose();
@@ -380,7 +413,8 @@ namespace Oxide.Plugins
                 }
 
                 int filesize = int.Parse(contentlength);
-                if (filesize > signArtist.Settings.MaxFileSizeInBytes * 1000000)
+
+                if (filesize > signArtist.Settings.MaxFileSizeInBytes)
                 {
                     head.Dispose();
                     signArtist.PrintWarning($"Filesize is {filesize / 1000000} MB the maximum size allowed is {signArtist.Settings.MaxSize} MB");
@@ -390,7 +424,9 @@ namespace Oxide.Plugins
 
                 head.Dispose();
 
-                UnityWebRequest www = UnityWebRequest.Get(request.Url);
+                var handler = new SizeLimitingHandler((int)signArtist.Settings.MaxFileSizeInBytes);
+                UnityWebRequest www = new UnityWebRequest(request.Url, UnityWebRequest.kHttpVerbGET, handler, null);
+                www.timeout = 10;
 
                 yield return www.SendWebRequest();
 
@@ -410,8 +446,8 @@ namespace Oxide.Plugins
                     yield break;
                 }
 
-                // Verify that the file doesn't exceed the maximum configured filesize.
-                if (www.downloadedBytes > signArtist.Settings.MaxFileSizeInBytes)
+                var data = handler.GetData();
+                if (handler.Aborted || data.Length > signArtist.Settings.MaxFileSizeInBytes)
                 {
                     // The file is too large, show a message to the player and attempt to start the next download.
                     signArtist.SendMessage(request.Sender, "FileTooLarge", signArtist.Settings.MaxSize);
@@ -425,11 +461,11 @@ namespace Oxide.Plugins
 
                 if (request.Raw)
                 {
-                    imageBytes = www.downloadHandler.data;
+                    imageBytes = data;
                 }
                 else
                 {
-                    imageBytes = GetImageBytes(www);
+                    imageBytes = GetImageBytes(data);
                 }
 
                 ImageSize size = GetImageSizeFor(request.Sign);
@@ -437,7 +473,6 @@ namespace Oxide.Plugins
                 // Verify that we have image size data for the targeted sign.
                 if (size == null)
                 {
-                    // No data was found, show a message to the player and print a detailed message to the server console and attempt to start the next download.
                     signArtist.SendMessage(request.Sender, "ErrorOccurred");
                     signArtist.PrintWarning($"Couldn't find the required image size for {request.Sign.PrefabName}, please report this in the plugin's thread.");
                     StartNextDownload(true);
@@ -523,6 +558,27 @@ namespace Oxide.Plugins
                 StartNextDownload(true);
                 www.Dispose();
 
+            }
+
+            private byte[] GetImageBytes(byte[] bytes)
+            {
+                Texture2D texture = new Texture2D(2, 2);
+                texture.LoadImage(bytes);
+
+                byte[] image;
+
+                if (texture.format == TextureFormat.ARGB32 && !signArtist.Settings.EnforceJpeg)
+                {
+                    image = texture.EncodeToPNG();
+                }
+                else
+                {
+                    image = texture.EncodeToJPG(signArtist.Settings.Quality);
+                }
+
+                DestroyImmediate(texture);
+
+                return image;
             }
 
             private IEnumerator LogToDiscord(DownloadRequest request)
