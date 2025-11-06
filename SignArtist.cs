@@ -18,10 +18,9 @@ using Color = System.Drawing.Color;
 using Graphics = System.Drawing.Graphics;
 using Steamworks;
 
-
 namespace Oxide.Plugins
 {
-    [Info("Sign Artist", "Whispers88", "1.4.4")]
+    [Info("Sign Artist", "Whispers88", "1.4.5")]
     [Description("Allows players with the appropriate permission to import images from the internet on paintable objects")]
 
     /*********************************************************************************
@@ -61,6 +60,12 @@ namespace Oxide.Plugins
 
             [JsonProperty(PropertyName = "Enforce JPG file format")]
             public bool EnforceJpeg { get; set; }
+
+            [JsonProperty(PropertyName = "Enable Header Check")]
+            public bool HeaderCheck { get; set; }
+
+            [JsonProperty(PropertyName = "Enforce Header Check")]
+            public bool HeaderCheckEnforce { get; set; }
 
             [JsonProperty(PropertyName = "JPG image quality (0-100)")]
             public int Quality
@@ -127,6 +132,8 @@ namespace Oxide.Plugins
                     MaxDistance = 3,
                     MaxActiveDownloads = 5,
                     EnforceJpeg = false,
+                    HeaderCheck = true,
+                    HeaderCheckEnforce = false,
                     Quality = 85,
                     FileLogging = false,
                     ConsoleLogging = false,
@@ -390,40 +397,47 @@ namespace Oxide.Plugins
                     request.Url = string.Format(ItemIconUrl, request.Url);
                 }
 
-                UnityWebRequest head = UnityWebRequest.Head(request.Url);
-
-                head.timeout = 10;
-
-                yield return head.SendWebRequest();
-
-                if (head.result != UnityWebRequest.Result.Success)
+                if (signArtist.Settings.HeaderCheck)
                 {
-                    signArtist.PrintWarning(head.error + "Cannot get headers from:" + request.Url);
+                    UnityWebRequest head = UnityWebRequest.Head(request.Url);
+
+                    head.timeout = 10;
+
+                    yield return head.SendWebRequest();
+
+                    if (head.result != UnityWebRequest.Result.Success)
+                    {
+                        signArtist.PrintWarning(head.error + "Cannot get headers from:" + request.Url);
+                        head.Dispose();
+                        StartNextDownload(true);
+                        if (signArtist.Settings.HeaderCheckEnforce)
+                            yield break;
+                    }
+
+                    string contentlength = head.GetResponseHeader("Content-Length");
+
+                    if (string.IsNullOrEmpty(contentlength))
+                    {
+                        head.Dispose();
+                        signArtist.PrintWarning("Could not get content length from:" + request.Url);
+                        StartNextDownload(true);
+                        if (signArtist.Settings.HeaderCheckEnforce)
+                            yield break;
+                    }
+
+                    int filesize = int.Parse(contentlength);
+
+                    if (filesize > signArtist.Settings.MaxFileSizeInBytes)
+                    {
+                        head.Dispose();
+                        signArtist.PrintWarning($"Filesize is {filesize / 1000000} MB the maximum size allowed is {signArtist.Settings.MaxSize} MB");
+                        signArtist.SendMessage(request.Sender, "FileTooLarge", signArtist.Settings.MaxSize);
+                        StartNextDownload(true);
+                        yield break;
+                    }
+
                     head.Dispose();
-                    yield break;
                 }
-
-                string contentlength = head.GetResponseHeader("Content-Length");
-
-                if (string.IsNullOrEmpty(contentlength))
-                {
-                    head.Dispose();
-                    signArtist.PrintWarning("Could not get content length from:" + request.Url);
-                    yield break;
-                }
-
-                int filesize = int.Parse(contentlength);
-
-                if (filesize > signArtist.Settings.MaxFileSizeInBytes)
-                {
-                    head.Dispose();
-                    signArtist.PrintWarning($"Filesize is {filesize / 1000000} MB the maximum size allowed is {signArtist.Settings.MaxSize} MB");
-                    signArtist.SendMessage(request.Sender, "FileTooLarge", signArtist.Settings.MaxSize);
-                    yield break;
-                }
-
-                head.Dispose();
-
                 var handler = new SizeLimitingHandler((int)signArtist.Settings.MaxFileSizeInBytes);
                 UnityWebRequest www = new UnityWebRequest(request.Url, UnityWebRequest.kHttpVerbGET, handler, null);
                 www.timeout = 10;
@@ -501,7 +515,6 @@ namespace Oxide.Plugins
                     signArtist.SendMessage(request.Sender, "FileTooLarge", signArtist.Settings.MaxSize);
                     www.Dispose();
                     StartNextDownload(true);
-
                     yield break;
                 }
 
@@ -593,7 +606,7 @@ namespace Oxide.Plugins
                 wwwpost.SetRequestHeader("Content-Type", "application/json");
                 yield return wwwpost.SendWebRequest();
 
-                if (wwwpost.isNetworkError || wwwpost.isHttpError)
+                if (wwwpost.result != UnityWebRequest.Result.Success)
                 {
                     signArtist.PrintError(wwwpost.error);
                     signArtist.PrintError(jsonmsg);
@@ -872,34 +885,35 @@ namespace Oxide.Plugins
             AddCovalenceCommand("silrestore", "RestoreCommand");
 
             // Initialize the dictionary with all paintable object assets and their target sizes
+            // Initialize the dictionary with all paintable object assets and their target sizes
             ImageSizePerAsset = new Dictionary<string, ImageSize>
             {
                 // Picture Frames
-                ["sign.pictureframe.landscape"] = new ImageSize(256, 128), // Landscape Picture Frame
-                ["sign.pictureframe.portrait"] = new ImageSize(128, 256),  // Portrait Picture Frame
+                ["sign.pictureframe.landscape"] = new ImageSize(256, 192), // Landscape Picture Frame
+                ["sign.pictureframe.portrait"] = new ImageSize(205, 256),  // Portrait Picture Frame
                 ["sign.pictureframe.tall"] = new ImageSize(128, 512),      // Tall Picture Frame
                 ["sign.pictureframe.xl"] = new ImageSize(512, 512),        // XL Picture Frame
                 ["sign.pictureframe.xxl"] = new ImageSize(1024, 512),      // XXL Picture Frame
 
                 // Wooden Signs
-                ["sign.small.wood"] = new ImageSize(128, 64),              // Small Wooden Sign
-                ["sign.medium.wood"] = new ImageSize(256, 128),            // Wooden Sign
-                ["sign.large.wood"] = new ImageSize(256, 128),             // Large Wooden Sign
-                ["sign.huge.wood"] = new ImageSize(512, 128),              // Huge Wooden Sign
+                ["sign.small.wood"] = new ImageSize(256, 128),              // Small Wooden Sign
+                ["sign.medium.wood"] = new ImageSize(512, 256),            // Wooden Sign
+                ["sign.large.wood"] = new ImageSize(512, 256),             // Large Wooden Sign
+                ["sign.huge.wood"] = new ImageSize(1024, 256),              // Huge Wooden Sign
 
                 // Banners
-                ["sign.hanging.banner.large"] = new ImageSize(64, 256),    // Large Banner Hanging
-                ["sign.pole.banner.large"] = new ImageSize(64, 256),       // Large Banner on Pole
+                ["sign.hanging.banner.large"] = new ImageSize(256, 1024),    // Large Banner Hanging
+                ["sign.pole.banner.large"] = new ImageSize(256, 1024),       // Large Banner on Pole
 
                 // Hanging Signs
-                ["sign.hanging"] = new ImageSize(128, 256),                // Two Sided Hanging Sign
-                ["sign.hanging.ornate"] = new ImageSize(256, 128),         // Two Sided Ornate Hanging Sign
+                ["sign.hanging"] = new ImageSize(256, 512),                // Two Sided Hanging Sign
+                ["sign.hanging.ornate"] = new ImageSize(512, 256),         // Two Sided Ornate Hanging Sign
 
                 // Town Signs
-                ["sign.post.single"] = new ImageSize(128, 64),             // Single Sign Post
-                ["sign.post.double"] = new ImageSize(256, 256),            // Double Sign Post
-                ["sign.post.town"] = new ImageSize(256, 128),              // One Sided Town Sign Post
-                ["sign.post.town.roof"] = new ImageSize(256, 128),         // Two Sided Town Sign Post
+                ["sign.post.single"] = new ImageSize(256, 128),             // Single Sign Post
+                ["sign.post.double"] = new ImageSize(512, 512),            // Double Sign Post
+                ["sign.post.town"] = new ImageSize(512, 256),              // One Sided Town Sign Post
+                ["sign.post.town.roof"] = new ImageSize(512, 256),         // Two Sided Town Sign Post
 
                 // Photo Frames
                 ["photoframe.large"] = new ImageSize(320, 240),
@@ -915,7 +929,7 @@ namespace Oxide.Plugins
 
                 // Other paintable assets
                 ["spinner.wheel.deployed"] = new ImageSize(512, 512, 285, 285), // Spinning Wheel
-                ["carvable.pumpkin"] = new ImageSize(64, 128),
+                ["carvable.pumpkin"] = new ImageSize(256, 256),
             };
         }
 
