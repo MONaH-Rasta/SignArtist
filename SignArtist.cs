@@ -20,7 +20,7 @@ using Steamworks;
 
 namespace Oxide.Plugins
 {
-    [Info("Sign Artist", "Whispers88", "1.4.5")]
+    [Info("Sign Artist", "Whispers88", "1.4.6")]
     [Description("Allows players with the appropriate permission to import images from the internet on paintable objects")]
 
     /*********************************************************************************
@@ -739,6 +739,7 @@ namespace Oxide.Plugins
         }
 
         #endregion Image Download Behaviour
+
         private interface IPaintableEntity
         {
             BaseEntity Entity { get; }
@@ -930,6 +931,30 @@ namespace Oxide.Plugins
                 // Other paintable assets
                 ["spinner.wheel.deployed"] = new ImageSize(512, 512, 285, 285), // Spinning Wheel
                 ["carvable.pumpkin"] = new ImageSize(256, 256),
+
+                //Artist DLC
+                ["lightupframe.small"] = new ImageSize(128, 175),
+                ["lightupframe.xl"] = new ImageSize(512, 512),
+                ["lightupframe.large"] = new ImageSize(320, 256),
+                ["lightupframe.standing"] = new ImageSize(128, 175),
+                ["goldframe.small"] = new ImageSize(256, 1024),
+                ["goldframe.standing"] = new ImageSize(128, 320),
+                ["goldframe.xxl"] = new ImageSize(1024, 512),
+                ["lightupframe.xxl"] = new ImageSize(1024, 512),
+                ["scrapframe.small"] = new ImageSize(128, 175),
+                ["paintable_reactive_target.deployed"] = new ImageSize(256, 256),
+                ["window.paintable"] = new ImageSize(512, 256),
+                ["goldframe.large"] = new ImageSize(320, 256),
+                ["scrapframe.large"] = new ImageSize(256, 1024),
+                ["goldframe.xl"] = new ImageSize(512, 512),
+                ["scrapframe.standing"] = new ImageSize(128, 320),
+                ["scrapframe.xl"] = new ImageSize(512, 512),
+                ["scrapframe.xxl"] = new ImageSize(1024, 512),
+                ["sign.artistcanvas.xxl"] = new ImageSize(1024, 512),
+                ["sign.artistcanvas.xl"] = new ImageSize(512, 512),
+                ["sign.artistcanvas.l"] = new ImageSize(256, 640),
+                ["sign.artistcanvas.xs"] = new ImageSize(192, 256),
+                ["sign.artistcanvas.m"] = new ImageSize(320, 240),
             };
         }
 
