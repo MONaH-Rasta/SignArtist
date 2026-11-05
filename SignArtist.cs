@@ -20,7 +20,7 @@ using Steamworks;
 
 namespace Oxide.Plugins
 {
-    [Info("Sign Artist", "Whispers88", "1.4.6")]
+    [Info("Sign Artist", "Whispers88", "1.4.7")]
     [Description("Allows players with the appropriate permission to import images from the internet on paintable objects")]
 
     /*********************************************************************************
@@ -526,10 +526,10 @@ namespace Oxide.Plugins
                 if (existingTextureId != 0)
                 {
                     // A texture was already assigned, remove this file to make room for the new one.
-                    FileStorage.server.Remove(existingTextureId, FileStorage.Type.png, request.Sign.NetId);
+                    FileStorage.server.Remove(request.Sign.NetId, request.TextureIndex);
                 }
 
-                uint textureId = FileStorage.server.Store(resizedImageBytes, FileStorage.Type.png, request.Sign.NetId, request.TextureIndex);
+                uint textureId = FileStorage.server.Store(request.Sign.NetId, request.TextureIndex, FileStorage.Type.png, resizedImageBytes);
 
                 // Create the image on the filestorage and send out a network update for the sign.
                 request.Sign.SetImage(request.TextureIndex, textureId);
@@ -664,7 +664,7 @@ namespace Oxide.Plugins
                 }
 
                 // Cache the byte array of the currently stored file.
-                imageBytes = FileStorage.server.Get(textureId, FileStorage.Type.png, request.Sign.NetId);
+                imageBytes = FileStorage.server.Get(request.Sign.NetId, request.TextureIndex, textureId);
                 ImageSize size = GetImageSizeFor(request.Sign);
 
                 // Verify that we have image size data for the targeted sign.
@@ -679,13 +679,13 @@ namespace Oxide.Plugins
                 }
 
                 // Remove the texture from the FileStorage.
-                FileStorage.server.Remove(textureId, FileStorage.Type.png, request.Sign.NetId);
+                FileStorage.server.Remove(request.Sign.NetId, request.TextureIndex);
 
                 // Get the bytes array for the resized image for the targeted sign.
                 byte[] resizedImageBytes = imageBytes.ResizeImage(size.Width, size.Height, size.ImageWidth, size.ImageHeight, signArtist.Settings.EnforceJpeg && !request.Raw);
 
                 // Create the image on the filestorage and send out a network update for the sign.
-                request.Sign.SetImage(request.TextureIndex, FileStorage.server.Store(resizedImageBytes, FileStorage.Type.png, request.Sign.NetId));
+                request.Sign.SetImage(request.TextureIndex, FileStorage.server.Store(request.Sign.NetId, request.TextureIndex, FileStorage.Type.png, resizedImageBytes));
                 request.Sign.SendNetworkUpdate();
 
                 // Notify the player that the image was loaded.
